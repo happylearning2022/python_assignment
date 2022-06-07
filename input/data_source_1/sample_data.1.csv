@@ -1,0 +1,12 @@
+product_name,quality,material_id,worth
+simple_product,low,1,5.00
+dented_product,low,1,0.50
+nice_product,medium,1,15.00
+worthless_product,low,1,0.00
+fancy_product,high,2,35.00
+cool_product,special,3,50.00
+torn_product,low,2,1.00
+okay_product,low,2,7.00
+broken_product,low,1,0.30
+dull_product,low,3,0.20
+worn_product,low,2,0.50
