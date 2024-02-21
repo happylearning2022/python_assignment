@@ -1,10 +1,11 @@
 # Original string
-original_strings = [
-    '|column1 | column2 | column3   |',
-    '|a | aa | aaa   |',
-    '|b | bb | ccc   |',
-    '+ this line should be ignored'
-]
+original_string = '''|column1 | column2 | column3   |
+|a | aa | aaa   |
+|b | bb | ccc   |
++ this line should be ignored'''
+
+# Split the string into lines
+original_strings = original_string.split('\n')
 
 # Prepare insert statements
 insert_statements = []
