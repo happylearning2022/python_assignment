@@ -24,6 +24,8 @@ def json_to_xml(input_file, output_file, root_tag='root'):
             elif event == 'end_map':
                 if elements_stack:
                     current_element = elements_stack.pop()
+                    if current_element.tag != root_tag:  # Don't pop the root element
+                        current_element = elements_stack[-1]
 
         tree = ET.ElementTree(root)
         tree.write(output_file, encoding='utf-8', xml_declaration=True)
