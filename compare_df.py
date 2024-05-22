@@ -69,4 +69,6 @@ print(report)
 report.to_html('test.html')
 # df = df.applymap(lambda x: None if pd.isna(x) or (isinstance(x, str) and x.strip() == '') else x)
 
-# 
+# for col in df.columns:
+    # df[col] = df[col].apply(lambda x: None if pd.isna(x) or (isinstance(x, str) and x.strip() == '') else x)
+
