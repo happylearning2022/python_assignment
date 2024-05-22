@@ -67,3 +67,6 @@ report = compare_dataframes(df_source, df_target, key_columns, compare_columns)
 print(report)
 
 report.to_html('test.html')
+# df = df.applymap(lambda x: None if pd.isna(x) or (isinstance(x, str) and x.strip() == '') else x)
+
+# 
