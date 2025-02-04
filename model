@@ -1,0 +1,38 @@
+import boto3
+import json
+
+# Initialize Amazon Bedrock Runtime Client
+bedrock_client = boto3.client('bedrock-runtime')
+
+def text_to_sql(user_query):
+    """
+    Converts a natural language user query into a SQL query using Claude 3 in Amazon Bedrock.
+    """
+
+    # Bedrock requires a structured "messages" format for Claude 3
+    body = {
+        "messages": [
+            {"role": "user", "content": f"Convert the following natural language query into a Redshift-compatible SQL query:\n\n{user_query}"}
+        ],
+        "max_tokens": 500,
+        "temperature": 0.1,  # Low temperature for deterministic SQL output
+        "top_p": 0.9
+    }
+
+    response = bedrock_client.invoke_model(
+        modelId="anthropic.claude-3-haiku-20240307",  # Change to Sonnet or Opus if needed
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps(body)
+    )
+
+    # Extract response text
+    response_body = json.loads(response['body'].read())
+    sql_query = response_body["output"]["message"]["content"].strip()  # Correct parsing for Claude 3 output
+
+    return sql_query
+
+# Example Usage
+user_query = "Show me all customers who made a purchase in the last 30 days."
+sql_query = text_to_sql(user_query)
+print(sql_query)
