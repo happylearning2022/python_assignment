@@ -1,38 +1,172 @@
 import boto3
-import json
+import pandas as pd
+from io import StringIO
 
-# Initialize Amazon Bedrock Runtime Client
-bedrock_client = boto3.client('bedrock-runtime')
+s3_client = boto3.client("s3")
+bucket_name = "your-s3-bucket"
+file_key = "metadata.csv"
+
+def fetch_metadata_from_s3():
+    obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+    data = obj["Body"].read().decode("utf-8")
+    df = pd.read_csv(StringIO(data))
+    return df
+
+
+
+import json
+import numpy as np
+import boto3
+import psycopg2
+
+bedrock_client = boto3.client("bedrock-runtime")
+
+def generate_embedding(text):
+    response = bedrock_client.invoke_model(
+        modelId="amazon.titan-embed-text-v1",
+        body=json.dumps({"inputText": text})
+    )
+    embedding = json.loads(response["body"].read())["embedding"]
+    return np.array(embedding).tolist()
+
+
+
+-- store embeddings  in pg vector
+
+db_config = {
+    "dbname": "your-dbname",
+    "user": "your-username",
+    "password": "your-password",
+    "host": "your-cluster-endpoint",
+    "port": "5432"
+}
+
+def store_metadata_embeddings(df):
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+    
+    for _, row in df.iterrows():
+        text = f"Table: {row['table_name']}, Column: {row['column_name']}, Description: {row['description']}"
+        embedding = generate_embedding(text)
+        
+        cursor.execute(
+            "INSERT INTO metadata_embeddings (table_name, column_name, description, embedding) VALUES (%s, %s, %s, %s)",
+            (row["table_name"], row["column_name"], row["description"], embedding)
+        )
+    
+    conn.commit()
+    conn.close()
+
+
+
+2.3 Create Table for Embeddings in PostgreSQL
+
+CREATE TABLE metadata_embeddings (
+    id SERIAL PRIMARY KEY,
+    table_name TEXT,
+    column_name TEXT,
+    description TEXT,
+    embedding vector(1536)
+);
+
+
+Step 3: Perform Semantic Search on User Input
+
+When the user inputs a query, we find the most relevant table and column names using vector similarity search.
+
+def semantic_search(query):
+    query_embedding = generate_embedding(query)
+    
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT table_name, column_name, description FROM metadata_embeddings "
+        "ORDER BY embedding <-> %s LIMIT 5", (query_embedding,)
+    )
+    
+    results = cursor.fetchall()
+    conn.close()
+    
+    return results
+Here, <-> is the cosine similarity operator in pgvector, which finds the closest matching metadata.
+
+Step 4: Convert User Input into SQL Using Amazon Bedrock
+
+Now, we'll use Amazon Bedrock (Anthropic Claude) to generate SQL queries based on the metadata retrieved from semantic search.
 
 def text_to_sql(user_query):
+    relevant_metadata = semantic_search(user_query)
+    
+    metadata_prompt = "\n".join([f"Table: {row[0]}, Column: {row[1]}, Description: {row[2]}" for row in relevant_metadata])
+    
+    prompt = f"""
+    Convert the following user query into an SQL query using the relevant metadata:
+    
+    Metadata:
+    {metadata_prompt}
+    
+    User Query:
+    {user_query}
+    
+    SQL Query:
     """
-    Converts a natural language user query into a SQL query using Claude 3 in Amazon Bedrock.
-    """
-
-    # Bedrock requires a structured "messages" format for Claude 3
-    body = {
-        "messages": [
-            {"role": "user", "content": f"Convert the following natural language query into a Redshift-compatible SQL query:\n\n{user_query}"}
-        ],
-        "max_tokens": 500,
-        "temperature": 0.1,  # Low temperature for deterministic SQL output
-        "top_p": 0.9
-    }
-
+    
     response = bedrock_client.invoke_model(
-        modelId="anthropic.claude-3-haiku-20240307",  # Change to Sonnet or Opus if needed
-        contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body)
+        modelId="anthropic.claude-v2",
+        body=json.dumps({"prompt": prompt, "max_tokens": 500})
     )
+    
+    return json.loads(response["body"].read())["completions"][0]["text"]
+Step 5: Execute SQL in Redshift
 
-    # Extract response text
-    response_body = json.loads(response['body'].read())
-    sql_query = response_body["output"]["message"]["content"].strip()  # Correct parsing for Claude 3 output
+db_config_redshift = {
+    "dbname": "your-redshift-dbname",
+    "user": "your-redshift-username",
+    "password": "your-redshift-password",
+    "host": "your-redshift-cluster-endpoint",
+    "port": "5439"
+}
 
-    return sql_query
+def execute_sql(query):
+    try:
+        conn = psycopg2.connect(**db_config_redshift)
+        cursor = conn.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+        conn.close()
+        return results
+    except Exception as e:
+        return str(e)
+Step 6: Build Streamlit Chatbot UI
 
-# Example Usage
-user_query = "Show me all customers who made a purchase in the last 30 days."
-sql_query = text_to_sql(user_query)
-print(sql_query)
+import streamlit as st
+
+st.title("Text-to-SQL Chatbot for Redshift with Semantic Search")
+
+user_query = st.text_input("Enter your query:")
+
+if st.button("Generate SQL and Execute"):
+    sql_query = text_to_sql(user_query)
+    st.write(f"Generated SQL: {sql_query}")
+    results = execute_sql(sql_query)
+    st.write("Results:", results)
+Final Architecture
+
+Extract Metadata from S3 and store it in pgvector.
+User Inputs Query → Streamlit captures input.
+Semantic Search → Find relevant tables/columns using embeddings.
+Text-to-SQL Conversion → Amazon Bedrock converts query into SQL.
+Query Execution → SQL runs on Redshift.
+Results Displayed → Streamlit shows the output.
+Summary
+
+Amazon S3 stores metadata (table names, column names, descriptions).
+Amazon Titan converts metadata & queries into embeddings.
+pgvector in PostgreSQL performs semantic similarity search.
+Amazon Bedrock generates SQL queries from user input.
+Amazon Redshift runs the SQL queries.
+Streamlit provides a chatbot interface.
+This setup ensures accurate SQL generation by incorporating semantic search to match user queries with the database schema.
+
+
