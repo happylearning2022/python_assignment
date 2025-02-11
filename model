@@ -1,172 +1,73 @@
 import boto3
+import json
+import chromadb
 import pandas as pd
 from io import StringIO
 
+# AWS Client Initialization
 s3_client = boto3.client("s3")
-bucket_name = "your-s3-bucket"
-file_key = "metadata.csv"
-
-def fetch_metadata_from_s3():
-    obj = s3_client.get_object(Bucket=bucket_name, Key=file_key)
-    data = obj["Body"].read().decode("utf-8")
-    df = pd.read_csv(StringIO(data))
-    return df
-
-
-
-import json
-import numpy as np
-import boto3
-import psycopg2
-
 bedrock_client = boto3.client("bedrock-runtime")
 
-def generate_embedding(text):
+# ChromaDB Client Initialization
+chroma_client = chromadb.PersistentClient(path="./chroma_db")  # Save vectors locally
+collection = chroma_client.get_or_create_collection(name="css_metadata")
+
+# Function to load metadata from S3
+def load_metadata_from_s3(bucket_name, file_key):
+    response = s3_client.get_object(Bucket=bucket_name, Key=file_key)
+    metadata = json.loads(response["Body"].read().decode("utf-8"))
+    return metadata
+
+# Function to get embedding from Amazon Titan model
+def get_embedding(text):
     response = bedrock_client.invoke_model(
         modelId="amazon.titan-embed-text-v1",
+        contentType="application/json",
+        accept="application/json",
         body=json.dumps({"inputText": text})
     )
-    embedding = json.loads(response["body"].read())["embedding"]
-    return np.array(embedding).tolist()
+    return json.loads(response["body"].read())["embedding"]
 
+# Function to insert metadata and embeddings into ChromaDB
+def insert_metadata_into_chromadb(metadata):
+    for idx, row in enumerate(metadata):
+        text = row["description"]  # Adjust key based on metadata structure
+        embedding = get_embedding(text)
 
-
--- store embeddings  in pg vector
-
-db_config = {
-    "dbname": "your-dbname",
-    "user": "your-username",
-    "password": "your-password",
-    "host": "your-cluster-endpoint",
-    "port": "5432"
-}
-
-def store_metadata_embeddings(df):
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
-    
-    for _, row in df.iterrows():
-        text = f"Table: {row['table_name']}, Column: {row['column_name']}, Description: {row['description']}"
-        embedding = generate_embedding(text)
-        
-        cursor.execute(
-            "INSERT INTO metadata_embeddings (table_name, column_name, description, embedding) VALUES (%s, %s, %s, %s)",
-            (row["table_name"], row["column_name"], row["description"], embedding)
+        collection.add(
+            ids=[str(idx)],  # Unique ID for each record
+            embeddings=[embedding],  # Vector embeddings
+            metadatas=[{
+                "table_name": row["table_name"],
+                "column_name": row["column_name"],
+                "description": text
+            }]
         )
-    
-    conn.commit()
-    conn.close()
 
-
-
-2.3 Create Table for Embeddings in PostgreSQL
-
-CREATE TABLE metadata_embeddings (
-    id SERIAL PRIMARY KEY,
-    table_name TEXT,
-    column_name TEXT,
-    description TEXT,
-    embedding vector(1536)
-);
-
-
-Step 3: Perform Semantic Search on User Input
-
-When the user inputs a query, we find the most relevant table and column names using vector similarity search.
-
-def semantic_search(query):
-    query_embedding = generate_embedding(query)
-    
-    conn = psycopg2.connect(**db_config)
-    cursor = conn.cursor()
-    
-    cursor.execute(
-        "SELECT table_name, column_name, description FROM metadata_embeddings "
-        "ORDER BY embedding <-> %s LIMIT 5", (query_embedding,)
+# Function to perform similarity search in ChromaDB
+def perform_similarity_search(query_text, n_results=5):
+    query_embedding = get_embedding(query_text)
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=n_results  # Get top 5 matches
     )
-    
-    results = cursor.fetchall()
-    conn.close()
-    
     return results
-Here, <-> is the cosine similarity operator in pgvector, which finds the closest matching metadata.
 
-Step 4: Convert User Input into SQL Using Amazon Bedrock
+# Main Workflow
+if __name__ == "__main__":
+    # Define your S3 bucket and metadata file path
+    bucket_name = "your-bucket-name"
+    file_key = "path/to/your/metadata.json"
 
-Now, we'll use Amazon Bedrock (Anthropic Claude) to generate SQL queries based on the metadata retrieved from semantic search.
+    # Load metadata from S3
+    metadata = load_metadata_from_s3(bucket_name, file_key)
+    print(f"Loaded {len(metadata)} metadata records.")
 
-def text_to_sql(user_query):
-    relevant_metadata = semantic_search(user_query)
-    
-    metadata_prompt = "\n".join([f"Table: {row[0]}, Column: {row[1]}, Description: {row[2]}" for row in relevant_metadata])
-    
-    prompt = f"""
-    Convert the following user query into an SQL query using the relevant metadata:
-    
-    Metadata:
-    {metadata_prompt}
-    
-    User Query:
-    {user_query}
-    
-    SQL Query:
-    """
-    
-    response = bedrock_client.invoke_model(
-        modelId="anthropic.claude-v2",
-        body=json.dumps({"prompt": prompt, "max_tokens": 500})
-    )
-    
-    return json.loads(response["body"].read())["completions"][0]["text"]
-Step 5: Execute SQL in Redshift
+    # Insert metadata and embeddings into ChromaDB
+    insert_metadata_into_chromadb(metadata)
+    print("Metadata and embeddings inserted into ChromaDB.")
 
-db_config_redshift = {
-    "dbname": "your-redshift-dbname",
-    "user": "your-redshift-username",
-    "password": "your-redshift-password",
-    "host": "your-redshift-cluster-endpoint",
-    "port": "5439"
-}
-
-def execute_sql(query):
-    try:
-        conn = psycopg2.connect(**db_config_redshift)
-        cursor = conn.cursor()
-        cursor.execute(query)
-        results = cursor.fetchall()
-        conn.close()
-        return results
-    except Exception as e:
-        return str(e)
-Step 6: Build Streamlit Chatbot UI
-
-import streamlit as st
-
-st.title("Text-to-SQL Chatbot for Redshift with Semantic Search")
-
-user_query = st.text_input("Enter your query:")
-
-if st.button("Generate SQL and Execute"):
-    sql_query = text_to_sql(user_query)
-    st.write(f"Generated SQL: {sql_query}")
-    results = execute_sql(sql_query)
-    st.write("Results:", results)
-Final Architecture
-
-Extract Metadata from S3 and store it in pgvector.
-User Inputs Query → Streamlit captures input.
-Semantic Search → Find relevant tables/columns using embeddings.
-Text-to-SQL Conversion → Amazon Bedrock converts query into SQL.
-Query Execution → SQL runs on Redshift.
-Results Displayed → Streamlit shows the output.
-Summary
-
-Amazon S3 stores metadata (table names, column names, descriptions).
-Amazon Titan converts metadata & queries into embeddings.
-pgvector in PostgreSQL performs semantic similarity search.
-Amazon Bedrock generates SQL queries from user input.
-Amazon Redshift runs the SQL queries.
-Streamlit provides a chatbot interface.
-This setup ensures accurate SQL generation by incorporating semantic search to match user queries with the database schema.
-
-
+    # Perform similarity search
+    query_text = "Find all CSS-related tables and columns"
+    search_results = perform_similarity_search(query_text)
+    print("Search Results:", search_results)
